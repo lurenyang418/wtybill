@@ -1,0 +1,139 @@
+name: Android Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Create a GitHub Release after the signed build succeeds"
+        required: true
+        default: false
+        type: boolean
+      release_tag:
+        description: "Release tag for a manually published build, for example v0.1.0"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  JAVA_VERSION: "17"
+
+jobs:
+  build:
+    name: Build and verify signed artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install required Android SDK packages
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Prepare release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.WTYBILL_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.WTYBILL_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.WTYBILL_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.WTYBILL_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_BASE64"
+          test -n "$KEYSTORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+          mkdir -p keystore
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > keystore/wtybill-release.jks
+          chmod 600 keystore/wtybill-release.jks
+          {
+            printf 'storeFile=keystore/wtybill-release.jks\n'
+            printf 'storePassword=%s\n' "$KEYSTORE_PASSWORD"
+            printf 'keyAlias=%s\n' "$KEY_ALIAS"
+            printf 'keyPassword=%s\n' "$KEY_PASSWORD"
+          } > keystore.properties
+          chmod 600 keystore.properties
+
+      - name: Run tests and build release artifacts
+        run: ./gradlew test :app:assembleRelease :app:bundleRelease
+
+      - name: Verify signatures and collect checksums
+        run: |
+          set -euo pipefail
+          apk="app/build/outputs/apk/release/app-release.apk"
+          aab="app/build/outputs/bundle/release/app-release.aab"
+          apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -x "$apksigner"
+          "$apksigner" verify --verbose "$apk"
+          LC_ALL=C jarsigner -verify "$aab" >/tmp/aab-verification.txt 2>&1
+          unzip -Z1 "$aab" | grep -Eq '^META-INF/[^/]+\\.(SF|RSA|DSA)$'
+          mkdir -p dist
+          cp "$apk" dist/wtybill-release.apk
+          cp "$aab" dist/wtybill-release.aab
+          sha256sum dist/wtybill-release.apk dist/wtybill-release.aab | tee dist/SHA256SUMS
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: wtybill-release-${{ github.run_number }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_release)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: wtybill-release-${{ github.run_number }}
+          path: dist
+
+      - name: Resolve and validate release tag
+        id: release
+        env:
+          PUSH_TAG: ${{ github.ref_name }}
+          MANUAL_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            release_tag="$PUSH_TAG"
+          else
+            release_tag="$MANUAL_TAG"
+          fi
+          [[ "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          printf 'tag=%s\n' "$release_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            dist/wtybill-release.apk \
+            dist/wtybill-release.aab \
+            dist/SHA256SUMS \
+            --title "$RELEASE_TAG" \
+            --generate-notes
