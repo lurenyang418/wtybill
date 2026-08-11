@@ -80,7 +80,7 @@ jobs:
           test -x "$apksigner"
           "$apksigner" verify --verbose "$apk"
           LC_ALL=C jarsigner -verify "$aab" >/tmp/aab-verification.txt 2>&1
-          unzip -Z1 "$aab" | grep -Eq '^META-INF/[^/]+\\.(SF|RSA|DSA)$'
+          unzip -Z1 "$aab" | grep -Eq '^META-INF/[^/]+\.(SF|RSA|DSA)$'
           mkdir -p dist
           cp "$apk" dist/wtybill-release.apk
           cp "$aab" dist/wtybill-release.aab
