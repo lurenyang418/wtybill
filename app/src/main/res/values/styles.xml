@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.Wtybill" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#9A7BFF</item>
+        <item name="android:statusBarColor">#111014</item>
+        <item name="android:navigationBarColor">#09090B</item>
+        <item name="android:windowSplashScreenBackground">#111014</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher</item>
+    </style>
+</resources>
